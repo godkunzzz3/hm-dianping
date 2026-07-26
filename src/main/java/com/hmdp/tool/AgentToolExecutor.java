@@ -124,41 +124,42 @@ public class AgentToolExecutor {
             if (shopId == null) {
                 throw new IllegalArgumentException("shopId不能为空");
             }
-            if ("shop_profile_tool".equals(toolName)) {
-                Shop shop = shopAgentTool.getShop(shopId);
-                if (shop == null) {
-                    throw new IllegalArgumentException("店铺不存在");
-                }
-                return shopAgentTool.buildShopProfile(shop);
-            }
-            if (!"order_analysis_tool".equals(toolName)
-                    && !"voucher_analysis_tool".equals(toolName)
-                    && !"review_content_tool".equals(toolName)) {
+            ToolHandler handler = readonlyHandlers().get(toolName);
+            if (handler == null) {
                 throw new IllegalArgumentException("不支持的只读工具：" + toolName);
             }
-
-            List<Voucher> vouchers = voucherAgentTool.queryShopVouchers(shopId);
-            List<Long> voucherIds = vouchers.stream().map(Voucher::getId).collect(Collectors.toList());
-
-            if ("order_analysis_tool".equals(toolName)) {
-                Map<Long, Voucher> voucherMap = vouchers.stream().collect(Collectors.toMap(Voucher::getId, voucher -> voucher));
-                List<VoucherOrder> orders = orderAgentTool.queryOrders(voucherIds, request.getStartTime());
-                return orderAgentTool.buildOrderAnalysis(orders, voucherMap);
-            }
-
-            if ("voucher_analysis_tool".equals(toolName)) {
-                List<SeckillVoucher> seckillVouchers = voucherAgentTool.querySeckillVouchers(voucherIds);
-                return voucherAgentTool.buildVoucherAnalysis(vouchers, seckillVouchers);
-            }
-
-            if ("review_content_tool".equals(toolName)) {
-                List<Blog> blogs = reviewAgentTool.queryShopBlogs(shopId);
-                List<BlogComments> comments = reviewAgentTool.queryComments(blogs);
-                return reviewAgentTool.buildReviewAnalysis(blogs, comments);
-            }
-
-            throw new IllegalArgumentException("不支持的只读工具：" + toolName);
+            return handler.execute(request);
         });
+    }
+
+    private Map<String, ToolHandler> readonlyHandlers() {
+        Map<String, ToolHandler> handlers = new LinkedHashMap<>();
+        handlers.put("shop_profile_tool", request -> {
+            Shop shop = shopAgentTool.getShop(request.getShopId());
+            if (shop == null) {
+                throw new IllegalArgumentException("店铺不存在");
+            }
+            return shopAgentTool.buildShopProfile(shop);
+        });
+        handlers.put("order_analysis_tool", request -> {
+            List<Voucher> vouchers = voucherAgentTool.queryShopVouchers(request.getShopId());
+            List<Long> voucherIds = vouchers.stream().map(Voucher::getId).collect(Collectors.toList());
+            Map<Long, Voucher> voucherMap = vouchers.stream().collect(Collectors.toMap(Voucher::getId, voucher -> voucher));
+            List<VoucherOrder> orders = orderAgentTool.queryOrders(voucherIds, request.getStartTime());
+            return orderAgentTool.buildOrderAnalysis(orders, voucherMap);
+        });
+        handlers.put("voucher_analysis_tool", request -> {
+            List<Voucher> vouchers = voucherAgentTool.queryShopVouchers(request.getShopId());
+            List<Long> voucherIds = vouchers.stream().map(Voucher::getId).collect(Collectors.toList());
+            List<SeckillVoucher> seckillVouchers = voucherAgentTool.querySeckillVouchers(voucherIds);
+            return voucherAgentTool.buildVoucherAnalysis(vouchers, seckillVouchers);
+        });
+        handlers.put("review_content_tool", request -> {
+            List<Blog> blogs = reviewAgentTool.queryShopBlogs(request.getShopId());
+            List<BlogComments> comments = reviewAgentTool.queryComments(blogs);
+            return reviewAgentTool.buildReviewAnalysis(blogs, comments);
+        });
+        return handlers;
     }
 
     private void validateReadonlyTool(String toolName) {
@@ -237,5 +238,9 @@ public class AgentToolExecutor {
         } catch (JsonProcessingException e) {
             return "{}";
         }
+    }
+
+    private interface ToolHandler {
+        Object execute(AgentToolExecutionRequestDTO request);
     }
 }

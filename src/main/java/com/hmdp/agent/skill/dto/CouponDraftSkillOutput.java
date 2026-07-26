@@ -17,6 +17,8 @@ public class CouponDraftSkillOutput {
 
     private Long draftId;
 
+    private Long suggestionId;
+
     private Long shopId;
 
     private String draftStatus;

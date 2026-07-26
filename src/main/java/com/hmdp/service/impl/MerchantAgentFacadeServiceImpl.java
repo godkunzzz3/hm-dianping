@@ -5,6 +5,12 @@ import com.hmdp.agent.MerchantAgentModelClient;
 import com.hmdp.agent.MerchantAgentPromptTemplateService;
 import com.hmdp.agent.MerchantAgentRulePolicyService;
 import com.hmdp.agent.MerchantAgentToolCallingService;
+import com.hmdp.agent.skill.SkillContext;
+import com.hmdp.agent.skill.SkillExecutionService;
+import com.hmdp.agent.skill.SkillResult;
+import com.hmdp.agent.skill.dto.CouponDraftSkillInput;
+import com.hmdp.agent.skill.dto.CouponDraftSkillOutput;
+import com.hmdp.agent.skill.dto.MerchantDiagnosisSkillInput;
 import com.hmdp.dto.*;
 import com.hmdp.entity.AgentActionLog;
 import com.hmdp.entity.AgentCampaignDraft;
@@ -136,6 +142,8 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
     private IMerchantAgentMemoryService agentMemoryService;
     @Resource
     private MerchantCampaignDraftValidator campaignDraftValidator;
+    @Resource
+    private SkillExecutionService skillExecutionService;
 
     @Override
     public Result queryAgentTools() {
@@ -925,7 +933,7 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         String intent = resolveChatIntent(userMessage);
         DateRange range = resolveDateRange(resolveChatDateRange(userMessage, request.getDateRange()));
         String toolName = resolveChatToolName(intent);
-        List<Map<String, Object>> ragKnowledge = retrieveRagKnowledge(intent, userMessage);
+        List<Map<String, Object>> ragKnowledge = retrieveRagKnowledge(shopId, intent, userMessage);
         List<AgentMemoryPromptDTO> memories = agentMemoryService.listPromptMemories(shopId);
         String merchantMemory = agentMemoryService.buildMemoryPrompt(memories);
         AgentPromptContextDTO promptContext = buildPromptContext(shop, userMessage, intent, toolName, range, ragKnowledge,
@@ -962,16 +970,36 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         workflowStepOrder = recordMemoryLoadStep(workflowRunId, sessionId, shopId, workflowStepOrder, memories);
         workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
                 flowTrace.get(2), "INTENT_RESOLVE", userMessage, intent);
-        workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
-                flowTrace.get(3), "TOOL_SELECT", intent, toolName);
+            workflowStepOrder = recordWorkflowFlowStep(workflowRunId, sessionId, shopId, workflowStepOrder,
+                    flowTrace.get(3), "TOOL_SELECT", intent, toolName);
+            SkillContext skillContext = new SkillContext()
+                    .setShopId(shopId)
+                    .setUserId(merchantId)
+                    .setSessionId(String.valueOf(sessionId))
+                    .setWorkflowRunId(workflowRunId)
+                    .setTraceId("agent-chat-" + sessionId + "-" + System.currentTimeMillis())
+                    .setUserInput(userMessage)
+                    .putAttribute("skillStepOrder", workflowStepOrder);
 
-        // 对话链路先保存用户消息，再保存工具结果和助手回复，后续接大模型时可作为上下文记忆。
-        try {
-            saveMessage(sessionId, shopId, "user", userMessage, null, null, null);
-            Map<String, Object> toolArgs = buildChatToolArgs(shopId, intent, range);
-            Map<String, Object> toolResult = buildChatToolResult(context, intent, range);
-            AgentToolExecutionResultDTO toolExecution = agentToolExecutor.wrapResult(
-                    toolName, toolArgs, toolResult);
+            // 对话链路先保存用户消息，再保存工具结果和助手回复，后续接大模型时可作为上下文记忆。
+            try {
+                saveMessage(sessionId, shopId, "user", userMessage, null, null, null);
+                Map<String, Object> toolArgs = buildChatToolArgs(shopId, intent, range);
+                Map<String, Object> toolResult = buildChatToolResult(context, intent, range);
+                SkillResult<?> diagnosisSkillResult = executeDiagnosisSkillIfNeeded(intent, shopId, range, userMessage, skillContext);
+                if (diagnosisSkillResult != null) {
+                    toolResult.put("skillResult", diagnosisSkillResult);
+                    toolResult.put("skillOutput", diagnosisSkillResult.getOutput());
+                    flowTrace.add(buildFlowStep("execute_skill", "执行 Agent Skill",
+                            diagnosisSkillResult.isSuccess() ? "success" : "failed",
+                            diagnosisSkillResult.isSuccess()
+                                    ? "已通过 SkillExecutionService 执行业务编排：" + diagnosisSkillResult.getMetadata().get("skillName")
+                                    : diagnosisSkillResult.getErrorMessage(),
+                            String.valueOf(diagnosisSkillResult.getMetadata().get("skillName")), null));
+                    workflowStepOrder += 2;
+                }
+                AgentToolExecutionResultDTO toolExecution = agentToolExecutor.wrapResult(
+                        toolName, toolArgs, toolResult);
             AgentFlowStepDTO toolStep = buildFlowStep("execute_tool", "执行工具并读取数据",
                     Boolean.TRUE.equals(toolExecution.getSuccess()) ? "success" : "failed",
                     Boolean.TRUE.equals(toolExecution.getSuccess())
@@ -997,9 +1025,24 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
             }
             AgentFlowStepDTO draftStep;
             if (suggestionId != null && shouldAutoCreateDraft(userMessage, request, intent)) {
-                draft = createDraftFromChatSuggestion(suggestionId, recommendation, shop);
-                draftStep = buildFlowStep("create_draft", "生成活动草稿", "success",
-                        "已生成待商家确认的活动草稿", "voucher_campaign_tool", null);
+                skillContext.putAttribute("skillStepOrder", workflowStepOrder);
+                SkillResult<CouponDraftSkillOutput> draftSkillResult = executeCouponDraftSkill(shopId, range, userMessage,
+                        recommendation, skillContext);
+                workflowStepOrder += 2;
+                if (draftSkillResult.isSuccess() && draftSkillResult.getOutput() != null
+                        && draftSkillResult.getOutput().getDraftId() != null) {
+                    draft = campaignDraftService.getById(draftSkillResult.getOutput().getDraftId());
+                    if (draftSkillResult.getOutput().getSuggestionId() != null) {
+                        suggestionId = draftSkillResult.getOutput().getSuggestionId();
+                    }
+                    draftStep = buildFlowStep("create_draft", "生成活动草稿", "success",
+                            "已通过 CouponDraftSkill 生成待商家确认的活动草稿", "coupon_draft_skill", null);
+                    toolResult.put("couponDraftSkill", draftSkillResult);
+                } else {
+                    draftStep = buildFlowStep("create_draft", "生成活动草稿", "failed",
+                            draftSkillResult.getErrorMessage(), "coupon_draft_skill", null);
+                    toolResult.put("couponDraftSkill", draftSkillResult);
+                }
             } else {
                 draftStep = buildFlowStep("create_draft", "生成活动草稿", "skipped",
                         "本轮未触发自动生成草稿，真实活动仍需商家确认", "voucher_campaign_tool", null);
@@ -1270,14 +1313,55 @@ public class MerchantAgentFacadeServiceImpl implements IMerchantAgentFacadeServi
         }
     }
 
-    private List<Map<String, Object>> retrieveRagKnowledge(String intent, String userMessage) {
+    private List<Map<String, Object>> retrieveRagKnowledge(Long shopId, String intent, String userMessage) {
         try {
-            return agentKnowledgeDocService.retrieveForAgent(intent, userMessage, 3);
+            return agentKnowledgeDocService.retrieveForAgentForShop(shopId, intent, userMessage, 3);
         } catch (Exception e) {
             // RAG 是增强能力，不能因为知识库检索失败导致主对话不可用。
             // 企业项目里这类增强链路通常要降级为空知识，并在日志中排查。
             return Collections.emptyList();
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private SkillResult<?> executeDiagnosisSkillIfNeeded(String intent, Long shopId, DateRange range,
+                                                         String userMessage, SkillContext skillContext) {
+        if (!"operation_chat".equals(intent)) {
+            return null;
+        }
+        MerchantDiagnosisSkillInput input = new MerchantDiagnosisSkillInput()
+                .setShopId(shopId)
+                .setTimeRange(range == null ? null : range.getCode())
+                .setUserQuestion(userMessage);
+        return skillExecutionService.execute("merchant_diagnosis_skill", input, skillContext);
+    }
+
+    @SuppressWarnings("unchecked")
+    private SkillResult<CouponDraftSkillOutput> executeCouponDraftSkill(Long shopId, DateRange range, String userMessage,
+                                                                        AgentRecommendationDTO recommendation,
+                                                                        SkillContext skillContext) {
+        CouponDraftSkillInput input = new CouponDraftSkillInput()
+                .setShopId(shopId)
+                .setCampaignGoal(recommendation == null || isBlank(recommendation.getTitle())
+                        ? "生成优惠券活动草稿"
+                        : recommendation.getTitle())
+                .setUserRequirement(userMessage)
+                .setTimeRange(range == null ? null : range.getCode())
+                .setDraftType(resolveDraftTypeForSkill(userMessage, recommendation));
+        SkillResult<?> result = skillExecutionService.execute("coupon_draft_skill", input, skillContext);
+        return (SkillResult<CouponDraftSkillOutput>) result;
+    }
+
+    private String resolveDraftTypeForSkill(String userMessage, AgentRecommendationDTO recommendation) {
+        String text = (userMessage == null ? "" : userMessage)
+                + " "
+                + (recommendation == null ? "" : recommendation.getType())
+                + " "
+                + (recommendation == null ? "" : recommendation.getTitle());
+        if (containsAny(text, "秒杀", "seckill")) {
+            return "seckill";
+        }
+        return "voucher";
     }
 
     private String resolveRagRetrievalMode(List<Map<String, Object>> ragKnowledge) {

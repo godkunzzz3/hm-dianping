@@ -23,6 +23,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Arrays;
@@ -39,6 +40,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -106,6 +108,46 @@ class CouponDraftSkillTest {
     }
 
     @Test
+    void shouldUseAnalysisEvidenceToDecideDraftParameters() {
+        Map<String, Object> orderData = new HashMap<>();
+        orderData.put("totalOrders", 20);
+        orderData.put("paidOrders", 8);
+        orderData.put("averageOrderValue", 12000L);
+        Map<String, Object> voucherData = new HashMap<>();
+        voucherData.put("onlineVouchers", 1);
+        voucherData.put("seckillStock", 40);
+        when(agentToolExecutor.executeReadonlyTool(eq("order_analysis_tool"), any(AgentToolExecutionRequestDTO.class)))
+                .thenReturn(new AgentToolExecutionResultDTO()
+                        .setToolName("order_analysis_tool")
+                        .setSuccess(true)
+                        .setData(orderData));
+        when(agentToolExecutor.executeReadonlyTool(eq("voucher_analysis_tool"), any(AgentToolExecutionRequestDTO.class)))
+                .thenReturn(new AgentToolExecutionResultDTO()
+                        .setToolName("voucher_analysis_tool")
+                        .setSuccess(true)
+                        .setData(voucherData));
+        when(rulePolicyService.isProhibitedOperation(anyString())).thenReturn(false);
+        when(draftSkillService.createDraftFromSkill(eq(SHOP_ID), eq("设计周末秒杀券"), eq("预算控制在240元"),
+                any(MerchantCampaignDraftRequest.class), any())).thenReturn(Result.ok(safeDraftResult()));
+
+        SkillResult<CouponDraftSkillOutput> result = skill.execute(new CouponDraftSkillInput()
+                .setShopId(SHOP_ID)
+                .setCampaignGoal("设计周末秒杀券")
+                .setUserRequirement("预算控制在240元")
+                .setDraftType("seckill")
+                .setBudgetLimit(24000), new SkillContext());
+
+        assertTrue(result.isSuccess());
+        ArgumentCaptor<MerchantCampaignDraftRequest> captor = forClass(MerchantCampaignDraftRequest.class);
+        verify(draftSkillService).createDraftFromSkill(eq(SHOP_ID), eq("设计周末秒杀券"), eq("预算控制在240元"),
+                captor.capture(), any());
+        assertEquals(2160L, captor.getValue().getActualValue());
+        assertEquals(1188L, captor.getValue().getPayValue());
+        assertEquals(11, captor.getValue().getStock());
+        assertNotNull(result.getMetadata().get("campaignDecision"));
+    }
+
+    @Test
     void shouldCallOnlyReadonlyAnalysisTools() {
         mockReadonlyToolsSuccess();
         when(rulePolicyService.isProhibitedOperation(anyString())).thenReturn(false);
@@ -170,6 +212,28 @@ class CouponDraftSkillTest {
         assertEquals(SkillRiskLevel.HIGH, result.getRiskLevel());
         assertTrue(result.isNeedHumanConfirm());
         assertEquals("HIGH", result.getMetadata().get("riskLevel"));
+        verify(draftSkillService, never()).createDraftFromSkill(anyLong(), anyString(), anyString(), any(), any());
+        verify(voucherAgentTool, never()).createVoucherFromDraft(any(AgentCampaignDraft.class));
+    }
+
+    @Test
+    void shouldRejectWhenBothAnalysisToolsFail() {
+        when(rulePolicyService.isProhibitedOperation(anyString())).thenReturn(false);
+        when(agentToolExecutor.executeReadonlyTool(eq("order_analysis_tool"), any(AgentToolExecutionRequestDTO.class)))
+                .thenReturn(new AgentToolExecutionResultDTO()
+                        .setToolName("order_analysis_tool")
+                        .setSuccess(false)
+                        .setErrorMsg("order down"));
+        when(agentToolExecutor.executeReadonlyTool(eq("voucher_analysis_tool"), any(AgentToolExecutionRequestDTO.class)))
+                .thenReturn(new AgentToolExecutionResultDTO()
+                        .setToolName("voucher_analysis_tool")
+                        .setSuccess(false)
+                        .setErrorMsg("voucher down"));
+
+        SkillResult<CouponDraftSkillOutput> result = skill.execute(validInput(), new SkillContext());
+
+        assertFalse(result.isSuccess());
+        assertEquals("INSUFFICIENT_EVIDENCE", result.getErrorCode());
         verify(draftSkillService, never()).createDraftFromSkill(anyLong(), anyString(), anyString(), any(), any());
         verify(voucherAgentTool, never()).createVoucherFromDraft(any(AgentCampaignDraft.class));
     }

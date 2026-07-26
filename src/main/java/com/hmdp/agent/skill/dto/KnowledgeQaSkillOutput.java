@@ -27,6 +27,17 @@ public class KnowledgeQaSkillOutput {
 
     private Double confidence;
 
+    /**
+     * 仅表示归一化后的保守置信度，不直接混用向量分数、关键词分数或重排分数。
+     */
+    private Double calibratedConfidence;
+
+    private Double bestVectorScore;
+
+    private Double bestKeywordScore;
+
+    private Double bestRerankScore;
+
     private Boolean noReliableHit = true;
 
     private Integer topK;

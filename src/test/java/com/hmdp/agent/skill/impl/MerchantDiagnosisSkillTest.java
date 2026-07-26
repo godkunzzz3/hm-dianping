@@ -92,6 +92,9 @@ class MerchantDiagnosisSkillTest {
         assertFalse(result.getOutput().getShopProfile().isEmpty());
         assertFalse(result.getOutput().getOrderStats().isEmpty());
         assertFalse(result.getOutput().getKeyFindings().isEmpty());
+        assertFalse(result.getOutput().getFindings().isEmpty());
+        assertNotNull(result.getOutput().getFindings().get(0).get("evidence"));
+        assertNotNull(result.getOutput().getConfidenceFactors().get("finalConfidence"));
 
         verify(agentToolExecutor).executeReadonlyTool(eq("shop_profile_tool"), any(AgentToolExecutionRequestDTO.class));
         verify(agentToolExecutor).executeReadonlyTool(eq("order_analysis_tool"), any(AgentToolExecutionRequestDTO.class));

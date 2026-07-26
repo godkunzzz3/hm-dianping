@@ -29,8 +29,9 @@ public class KnowledgeQaSkill implements AgentSkill<KnowledgeQaSkillInput, Knowl
 
     private static final String DEFAULT_INTENT = "operation_chat";
     private static final int DEFAULT_TOP_K = 5;
+    private static final int MAX_TOP_K = 20;
     private static final String LOW_CONFIDENCE_ANSWER = "未找到足够可靠的商家知识库依据，建议补充相关知识后再回答。";
-    private static final String RETRIEVED_ANSWER = "已召回相关商家知识片段，请基于 retrievedChunks 进行回答。";
+    private static final String RETRIEVED_ANSWER = "已召回相关商家知识片段；本 Skill 只负责安全检索，上层 Agent 需要基于 retrievedChunks 生成带引用的回答。";
 
     private final IMerchantAgentKnowledgeDocService knowledgeDocService;
 
@@ -47,8 +48,8 @@ public class KnowledgeQaSkill implements AgentSkill<KnowledgeQaSkillInput, Knowl
     public SkillDefinition definition() {
         return new SkillDefinition()
                 .setSkillName(SKILL_NAME)
-                .setDisplayName("商家知识问答 Skill")
-                .setDescription("复用商家隔离 RAG 检索、重排、置信阈值和 noReliableHit 能力，返回基于知识库证据的问答结果。")
+                .setDisplayName("商家知识检索 Skill")
+                .setDescription("复用商家隔离 RAG 检索、重排、置信阈值和 noReliableHit 能力，返回当前商家可用知识证据；第一版不调用大模型生成最终答案。")
                 .setVersion("v1")
                 .setAllowedTools(Collections.<String>emptyList())
                 .setRiskLevel(SkillRiskLevel.LOW)
@@ -95,6 +96,11 @@ public class KnowledgeQaSkill implements AgentSkill<KnowledgeQaSkillInput, Knowl
                 .putMetadata("noReliableHit", output.getNoReliableHit())
                 .putMetadata("retrievedCount", output.getRetrievedChunks().size())
                 .putMetadata("shopScoped", true)
+                .putMetadata("skillMode", "retrieval_only")
+                .putMetadata("calibratedConfidence", output.getCalibratedConfidence())
+                .putMetadata("bestVectorScore", output.getBestVectorScore())
+                .putMetadata("bestKeywordScore", output.getBestKeywordScore())
+                .putMetadata("bestRerankScore", output.getBestRerankScore())
                 .putMetadata("traceId", context == null ? null : context.getTraceId());
     }
 
@@ -106,7 +112,7 @@ public class KnowledgeQaSkill implements AgentSkill<KnowledgeQaSkillInput, Knowl
                                                SkillContext context) {
         List<Map<String, Object>> safeHits = hits == null ? new ArrayList<>() : hits;
         boolean noReliableHit = safeHits.isEmpty() || containsNoReliableHit(safeHits);
-        Double confidence = resolveConfidence(safeHits);
+        ScoreSummary scoreSummary = resolveScores(safeHits);
         List<Object> chunks = new ArrayList<>(safeHits);
 
         Map<String, Object> metadata = new LinkedHashMap<>();
@@ -116,6 +122,12 @@ public class KnowledgeQaSkill implements AgentSkill<KnowledgeQaSkillInput, Knowl
         metadata.put("topK", topK);
         metadata.put("retrievedCount", chunks.size());
         metadata.put("shopScoped", true);
+        metadata.put("skillMode", "retrieval_only");
+        metadata.put("scoreSemantics", "vectorScore/keywordScore/rerankScore保留原始量纲，calibratedConfidence仅作保守展示");
+        metadata.put("bestVectorScore", scoreSummary.bestVectorScore);
+        metadata.put("bestKeywordScore", scoreSummary.bestKeywordScore);
+        metadata.put("bestRerankScore", scoreSummary.bestRerankScore);
+        metadata.put("calibratedConfidence", scoreSummary.calibratedConfidence);
         metadata.put("traceId", context == null ? null : context.getTraceId());
 
         return new KnowledgeQaSkillOutput()
@@ -124,7 +136,11 @@ public class KnowledgeQaSkill implements AgentSkill<KnowledgeQaSkillInput, Knowl
                 .setQuestion(question)
                 .setAnswer(resolveAnswer(noReliableHit, safeHits))
                 .setRetrievedChunks(chunks)
-                .setConfidence(confidence)
+                .setConfidence(scoreSummary.calibratedConfidence)
+                .setCalibratedConfidence(scoreSummary.calibratedConfidence)
+                .setBestVectorScore(scoreSummary.bestVectorScore)
+                .setBestKeywordScore(scoreSummary.bestKeywordScore)
+                .setBestRerankScore(scoreSummary.bestRerankScore)
                 .setNoReliableHit(noReliableHit)
                 .setTopK(topK)
                 .setMetadata(metadata);
@@ -152,24 +168,58 @@ public class KnowledgeQaSkill implements AgentSkill<KnowledgeQaSkillInput, Knowl
         return false;
     }
 
-    private Double resolveConfidence(List<Map<String, Object>> hits) {
+    private ScoreSummary resolveScores(List<Map<String, Object>> hits) {
+        ScoreSummary summary = new ScoreSummary();
         if (hits == null || hits.isEmpty()) {
+            return summary;
+        }
+        for (Map<String, Object> hit : hits) {
+            summary.bestVectorScore = max(summary.bestVectorScore, firstNumber(hit, "vectorScore", "similarityScore"));
+            summary.bestKeywordScore = max(summary.bestKeywordScore, firstNumber(hit, "keywordScore"));
+            summary.bestRerankScore = max(summary.bestRerankScore, firstNumber(hit, "rerankScore"));
+            summary.calibratedConfidence = max(summary.calibratedConfidence, firstNumber(hit, "calibratedConfidence", "confidence"));
+        }
+        if (summary.calibratedConfidence == null) {
+            summary.calibratedConfidence = conservativeConfidence(summary);
+        }
+        return summary;
+    }
+
+    private Double firstNumber(Map<String, Object> hit, String... keys) {
+        if (hit == null) {
             return null;
         }
-        Double best = null;
-        for (Map<String, Object> hit : hits) {
-            Double value = numberAsDouble(hit == null ? null : hit.get("confidence"));
-            if (value == null) {
-                value = numberAsDouble(hit == null ? null : hit.get("similarityScore"));
-            }
-            if (value == null) {
-                value = numberAsDouble(hit == null ? null : hit.get("rerankScore"));
-            }
-            if (value != null && (best == null || value > best)) {
-                best = value;
+        for (String key : keys) {
+            Double value = numberAsDouble(hit.get(key));
+            if (value != null) {
+                return value;
             }
         }
-        return best;
+        return null;
+    }
+
+    private Double max(Double first, Double second) {
+        if (second == null) {
+            return first;
+        }
+        if (first == null || second > first) {
+            return second;
+        }
+        return first;
+    }
+
+    private Double conservativeConfidence(ScoreSummary summary) {
+        Double base = summary.bestRerankScore;
+        if (base == null) {
+            base = summary.bestVectorScore;
+        }
+        if (base == null) {
+            base = summary.bestKeywordScore;
+        }
+        if (base == null) {
+            return null;
+        }
+        return Math.max(0.0D, Math.min(1.0D, base));
     }
 
     private Double numberAsDouble(Object value) {
@@ -190,10 +240,17 @@ public class KnowledgeQaSkill implements AgentSkill<KnowledgeQaSkillInput, Knowl
         if (topK == null || topK <= 0) {
             return DEFAULT_TOP_K;
         }
-        return topK;
+        return Math.min(topK, MAX_TOP_K);
     }
 
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
+    }
+
+    private static class ScoreSummary {
+        private Double bestVectorScore;
+        private Double bestKeywordScore;
+        private Double bestRerankScore;
+        private Double calibratedConfidence;
     }
 }

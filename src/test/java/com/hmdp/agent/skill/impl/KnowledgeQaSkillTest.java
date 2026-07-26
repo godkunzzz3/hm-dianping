@@ -73,7 +73,10 @@ class KnowledgeQaSkillTest {
         assertEquals(10143L, result.getOutput().getShopId());
         assertFalse(result.getOutput().getNoReliableHit());
         assertEquals(Boolean.TRUE, result.getMetadata().get("shopScoped"));
+        assertEquals("retrieval_only", result.getMetadata().get("skillMode"));
         assertEquals(1, result.getMetadata().get("retrievedCount"));
+        assertEquals(0.86D, result.getOutput().getBestVectorScore());
+        assertEquals(0.86D, result.getOutput().getCalibratedConfidence());
         assertTrue(result.getUsedTools().isEmpty());
         verify(knowledgeDocService).retrieveForAgentForShop(10143L, "voucher_plan", "秒杀库存怎么设置", 5);
         verify(knowledgeDocService, never()).retrieveForAgent(anyString(), anyString(), anyInt());
@@ -172,6 +175,21 @@ class KnowledgeQaSkillTest {
         assertEquals(Boolean.TRUE, result.getMetadata().get("shopScoped"));
         verify(knowledgeDocService).retrieveForAgentForShop(10143L, "voucher_plan", "秒杀活动怎么做", 3);
         verify(knowledgeDocService, never()).retrieveForAgent(anyString(), anyString(), anyInt());
+    }
+
+    @Test
+    void shouldCapTopKToSafeUpperBound() {
+        when(knowledgeDocService.retrieveForAgentForShop(eq(10143L), eq("operation_chat"), eq("活动规则"), eq(20)))
+                .thenReturn(Collections.singletonList(knowledgeRow(10143L, "活动规则", 0.70D)));
+
+        SkillResult<KnowledgeQaSkillOutput> result = skill.execute(new KnowledgeQaSkillInput()
+                .setShopId(10143L)
+                .setQuestion("活动规则")
+                .setTopK(100), new SkillContext());
+
+        assertTrue(result.isSuccess());
+        assertEquals(20, result.getOutput().getTopK());
+        verify(knowledgeDocService).retrieveForAgentForShop(10143L, "operation_chat", "活动规则", 20);
     }
 
     private Map<String, Object> knowledgeRow(Long shopId, String title, Double confidence) {
