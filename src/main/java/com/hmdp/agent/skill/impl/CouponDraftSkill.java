@@ -17,6 +17,7 @@ import com.hmdp.dto.MerchantCampaignDraftSkillResultDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.service.MerchantCampaignDraftSkillService;
 import com.hmdp.tool.AgentToolExecutor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -58,6 +59,7 @@ public class CouponDraftSkill implements AgentSkill<CouponDraftSkillInput, Coupo
         this(agentToolExecutor, draftSkillService, rulePolicyService, new AgentSkillActionPolicyService());
     }
 
+    @Autowired
     public CouponDraftSkill(AgentToolExecutor agentToolExecutor,
                             MerchantCampaignDraftSkillService draftSkillService,
                             MerchantAgentRulePolicyService rulePolicyService,
