@@ -9,7 +9,7 @@
 - Workflow 是执行观测、回放和评测基础设施，用于记录 Skill 开始、结束、失败等步骤。
 - HITL 用于控制高风险写操作。模型和 Skill 不能直接创建真实优惠券，高风险动作必须先生成草稿，再由商家确认。
 
-这一层的目标不是替代 Tool Calling，而是把 Tool / RAG / Rule Policy / Draft Service 组合成更适合面试讲解和工程演进的 Agent 能力边界。
+这一层的目标不是替代 Tool Calling，而是把 Tool / RAG / Rule Policy / Draft Service 组合成更清晰、可测试、可观测的 Agent 能力边界。
 
 ## 2. 架构分层
 
@@ -216,11 +216,11 @@ Skill 执行异常由 `SkillExecutionService` 或 Skill 自身包装成 `SkillRe
 - `ca2a8d2 refactor: add safe campaign draft creation support`
 - `704dd14 feat: add coupon draft skill`
 
-## 7. 面试讲解口径
+## 7. 技术说明
 
 本项目中没有让模型直接自由执行写操作，而是在 Agent Tool 之上抽象 Skill 层。只读 Skill 负责商家诊断和知识库问答，高风险写操作通过 CouponDraftSkill 生成草稿，并强制进入人工确认流程。所有 Skill 默认不直接暴露给模型调用，执行过程由 Workflow 记录，便于回放、评测和失败定位。
 
-可以这样展开：
+可以概括为：
 
 - Tool 是原子能力，适合做最小权限控制。
 - Skill 是业务目标编排，适合承载 RAG、规则、只读工具和草稿服务组合。

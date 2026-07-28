@@ -202,35 +202,6 @@ Agent 模块面向商家，支持：
 - 不绕过商家确认创建真实优惠券或秒杀券
 - 不修改支付、核销、库存等高风险状态
 
-## 开发笔记维护约定
-
-后续每完成一个功能点，除了提交代码，也同步维护项目笔记，方便复盘和面试讲解。
-
-固定写法：
-
-1. `README.md`：记录功能背景、业务逻辑、核心流程和验证方式。
-2. `docs/INTERVIEW_GUIDE.md`：记录面试讲法、设计取舍和可能追问。
-3. `docs/DEMO_SCRIPT.md`：如果功能涉及页面演示，同步补充演示路径和讲解话术。
-
-每个功能点建议按以下结构记录：
-
-```text
-功能目标：
-解决了什么业务问题。
-
-业务逻辑：
-用户/商家触发什么动作，后端如何处理，哪些数据会被读写。
-
-工程设计：
-为什么这样分层，哪些边界在后端兜底。
-
-验证方式：
-编译、接口、页面或数据库验证结果。
-
-面试讲法：
-一句话讲清楚亮点，以及面试官可能追问什么。
-```
-
 ### 近期开发记录：Agent 活动草稿安全校验
 
 功能目标：
@@ -323,15 +294,12 @@ Agent 可以根据运营建议生成优惠券/秒杀券草稿，但大模型和�
 - `voucher_campaign_tool` 仍保留在完整工具清单中，但不会进入模型可调用工具列表。
 - `getShopVouchers` 作为只读工具进入模型可调用工具列表。
 
-面试讲法：
-
-> 我把 Tool Calling 从手写工具列表升级成注册表驱动。每个工具自己声明是否允许模型调用，LangChain4j 调用层只读取低风险只读工具。这样新增工具时不需要到处改代码，也能避免把写操作误暴露给模型。
 
 ### 近期开发记录：Tool Calling 操作审计增强
 
 功能目标：
 
-让 Tool Calling 不只在前端展示执行链路，还要把模型调用概况和每个工具执行明细写入 `tb_agent_action_log`，方便后续排查、审计和面试讲解。
+让 Tool Calling 不只在前端展示执行链路，还要把模型调用概况和每个工具执行明细写入 `tb_agent_action_log`，方便后续排查、审计和技术说明。
 
 业务逻辑：
 
@@ -355,9 +323,6 @@ Agent 可以根据运营建议生成优惠券/秒杀券草稿，但大模型和�
 - Tool Calling 返回结果中的 `toolCalls` 会被拆成多条审计日志。
 - `/merchant-agent/shops/{shopId}/actions` 可以继续查询这些日志，并通过 `actionTypeName` 区分模型调用和工具执行。
 
-面试讲法：
-
-> 我没有只把 Agent 的最终回复落库，而是把模型调用和每个工具调用都拆成审计日志。这样当 Agent 回复不理想时，可以判断是模型选错工具、工具参数不对、工具执行失败，还是底层业务数据不足。这是 AI Agent 工程化落地时很关键的可观测性设计。
 
 ## Agent 调用流程
 
@@ -636,21 +601,16 @@ mvn -B test
 - 关键测试：`MerchantAgentRulePolicyServiceTest.shouldDetectExpandedProhibitedOperations`、`MerchantAgentEvalServiceTest.shouldEvaluateDefaultSafetyCasesAsHighRiskGuardrails`。
 - 演示入口：`http://localhost:8080/merchant-agent.html` 的 `Agent评测`。
 
-面试讲法：
-
-可以把这一段讲成“Agent 安全边界的自动化回归”。我不是只靠提示词告诉模型不要退款、不要删活动，而是把这些高风险输入固化成评测用例。每次运行 Agent Eval，都会检查这些输入是否被识别为高风险、是否需要人工确认、是否没有映射到可直接执行的工具。
-
-这能体现一个工程化取舍：第一版先不做复杂 LLM-as-Judge，而是把最容易造成业务事故的安全边界做成确定性测试，保证 Agent 迭代时不会把写操作、隐私查询或状态修改错误暴露出去。
 
 ### 近期开发记录：Agent Eval 最小闭环
 
 功能目标：
 
-补齐 Agent 行为评测的第一版闭环，用确定性规则验证 Agent 的意图识别、工具选择、人工确认判断和风险等级判断是否符合预期，方便后续面试展示和回归测试。
+补齐 Agent 行为评测的第一版闭环，用确定性规则验证 Agent 的意图识别、工具选择、人工确认判断和风险等级判断是否符合预期，方便后续回归测试。
 
 业务逻辑：
 
-1. 开发者或面试演示时通过 `POST /merchant-agent/evaluate-agent` 触发评测。
+1. 开发者调试时通过 `POST /merchant-agent/evaluate-agent` 触发评测。
 2. 如果请求体传入自定义 cases，则使用临时用例；否则读取 `tb_agent_eval_case` 中启用的持久化用例。
 3. 如果没有持久化用例，后端使用少量默认用例兜底。
 4. 每条用例复用 `MerchantAgentRulePolicyService` 计算实际意图、工具、是否需要人工确认和风险等级。
@@ -671,11 +631,6 @@ mvn -B test
 - 关键类：`MerchantAgentEvalServiceImpl`、`MerchantAgentEvalCaseServiceImpl`、`MerchantAgentEvalRunServiceImpl`、`MerchantAgentRulePolicyService`。
 - 关键接口：`/merchant-agent/eval-cases`、`/merchant-agent/evaluate-agent`、`/merchant-agent/eval-runs`。
 
-面试讲法：
-
-可以把这一段讲成“Agent 行为回归测试”。我没有直接用大模型自评，也没有做复杂的 LLM-as-Judge，而是先把高确定性的行为抽出来评测：同一个商家问题应该识别成什么意图、选择哪个工具、是否需要人工确认、风险等级是否正确。
-
-这个设计的价值是让 Agent 不只是能跑 Demo，还能对安全边界做自动化回归。后续如果扩展真实模型评测或 LLM-as-Judge，也可以在这个 case/run/result 基础上继续叠加，而不是影响线上 Agent 主链路。
 
 ### 近期开发记录：Memory 小闭环第一阶段：后端 + Prompt 接入
 
@@ -708,11 +663,6 @@ mvn -B test
 - Prompt 模板：`prompt/merchant-agent/chat-frame.md`、`prompt/merchant-agent/tool-calling-frame.md`。
 - Workflow step：`MEMORY_LOAD`。
 
-面试讲法：
-
-可以把聊天历史和 Memory 分开讲：聊天历史解决的是当前会话里的上下文引用，例如“刚才那个活动”“它”；Memory 解决的是跨会话长期偏好，例如商家偏好周末活动、不希望折扣过大、活动文案要轻松。这样 Agent 不只是记住最近几条消息，而是能带着店铺级偏好做运营建议。
-
-第一版我没有做自动记忆抽取，也没有做向量记忆或 Summary Memory，而是选择人工维护的 Preference Memory。原因是长期记忆一旦写错，会持续污染后续 Prompt，所以先让来源可控；同时在 Prompt 中明确 Memory 不能覆盖工具查询结果，避免偏好影响真实经营数据判断。
 
 ### 近期开发记录：Memory Candidate 后端第一阶段
 
@@ -746,26 +696,7 @@ mvn -B test
 - 关键接口：`GET /merchant-agent/shops/{shopId}/memory-candidates`、`POST /merchant-agent/shops/{shopId}/memory-candidates/generate`、`PUT /merchant-agent/memory-candidates/{candidateId}`、`POST /merchant-agent/memory-candidates/{candidateId}/confirm`、`POST /merchant-agent/memory-candidates/{candidateId}/reject`、`DELETE /merchant-agent/memory-candidates/{candidateId}`。
 - 关键测试：规则命中、候选生成、确认写入正式 Memory、非 `PENDING` 不能确认、敏感信息不能确认、跨商家不能确认、重复确认失败和 Workflow 失败不影响主流程。
 
-面试讲法：
 
-这个阶段可以讲成“Memory 的 Human-in-the-loop”。长期 Memory 会影响后续所有 Agent 输出，所以不能让模型直接写入。第一版先用规则从商家输入里提取候选偏好，保存为 `PENDING`，只有商家确认后才进入正式 Memory 和 Prompt。
-
-它和活动草稿确认是同一类安全边界：模型或规则可以提出建议，但写入长期状态或真实业务表之前必须有人确认。这样既保留 Agent 的自动化能力，也避免一次性表达、误判或敏感信息污染长期记忆。
-
-## 面试讲解关键词
-
-这个项目可以重点讲下面几条主线：
-
-1. Redis 秒杀如何防止超卖和一人多单。
-2. 为什么用 Lua 保证库存扣减和一人一单的原子性。
-3. 为什么用 Redis Stream 做异步下单。
-4. 店铺缓存如何处理穿透、击穿和一致性。
-5. Feed 流为什么用 Sorted Set。
-6. 签到为什么用 BitMap。
-7. Agent Tool Calling 如何把 Java Service 包装成工具。
-8. 为什么 Agent 高风险动作必须 Human-in-the-loop。
-9. RAG 为什么需要质量闸门和召回评测。
-10. Prompt 版本和模型调用日志如何帮助排查效果变化。
 
 ## 当前状态与边界
 

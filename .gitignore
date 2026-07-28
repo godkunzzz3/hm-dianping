@@ -5,3 +5,15 @@ target/
 .vscode/
 .DS_Store
 *.iml
+
+# Local-only review/interview notes and generated evaluation artifacts
+docs/INTERVIEW_GUIDE.md
+docs/DEMO_SCRIPT.md
+docs/PROJECT_OVERVIEW.md
+docs/CODEX_HANDOFF.md
+docs/EVAL_REPORT.md
+docs/eval/
+docs/*面试*
+docs/*论文模板*
+output/
+tmp/
