@@ -118,7 +118,7 @@ http://localhost:8080/merchant-agent.html
 
 ![用户端店铺详情与优惠券](docs/assets/shop-detail.png)
 
-### 商家运营 Agent 工作台
+### 商家运营 Agent 工作台与草稿管理
 
 ![商家运营 Agent 工作台](docs/assets/merchant-agent-overview.png)
 
